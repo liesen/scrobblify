@@ -14,7 +14,7 @@ public:
   virtual ~Scrobblify();
 
   // Initializes Scrobblify and the Last.fm client
-  void Init(const std::wstring& user_directory);
+  void Init();
 
   // Get directory containing Spotify data.
   static std::wstring GetSpotifyDirectory();
@@ -37,8 +37,8 @@ private:
   // Method used for receiving information from scrob_submitter_
   static void StatusCallback(int request_id, bool is_error, std::string message, void * user_data);
 
-  // Path to current user's meta data file
-  std::wstring user_metadata_path_;
+  // Path to user meta data files
+  std::vector<std::wstring> metadata_paths_;
 
   // ID of current request
   int current_request_id_;

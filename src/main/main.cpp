@@ -10,6 +10,11 @@
 HINSTANCE hInst;
 HWND hwnd;
 
+// Application level mutex
+HANDLE application_mutex;
+
+const LPCWSTR kApplicationMutexName = _T("Scrobblify");
+
 // Use NOTIFYICONDATAA because only errors are displayed using the balloon,
 // and errors = exceptions which are using narrow chars
 NOTIFYICONDATAA tray_icon;
@@ -18,6 +23,9 @@ const char kTrayTooltip[] = "Scrobblify";
 
 // Window class name -- use MsnMsgrUIManager to receive messages from Spotify
 const wchar_t kMsnWindowName[] = _T("MsnMsgrUIManager");
+
+// Number identifying an MSN "play this-notification"
+const unsigned long kMsnMagicNumber = 0x547;
 
 // The magic
 Scrobblify scrobblify;
@@ -38,7 +46,6 @@ void SetTooltipText(const char* msg) {
   strcpy_s(tray_icon.szTip, kTrayTooltip);
   Shell_NotifyIconA(NIM_MODIFY, &tray_icon);
 }
-
 
 /**
  * Handles the WM_COPYDATA event if the target is an MsnMsgrUIManager-window.
@@ -99,21 +106,8 @@ LRESULT CALLBACK OnCopyData(HWND hWnd, WPARAM w, LPARAM lParam) {
  * Initializes Scrobblify.
  */
 void InitScrobbler() {
-  std::vector<std::wstring> spotify_users;
-  
-  if (Scrobblify::GetSpotifyUserDirectories(spotify_users) != 1) {
-    // TODO(liesen): Show dialog for selecting user here -- or look in all 
-    // users metadata files
-    MessageBox(NULL, 
-               _T("Mngh! There are more than one Spotify accounts in use on \
-                  this machine. I die."),
-               _T("Failure during initialization"), 
-               MB_ICONERROR | MB_TOPMOST | MB_OK);
-    exit(EXIT_FAILURE);
-  }
-
   try {
-    scrobblify.Init(spotify_users.front());
+    scrobblify.Init();
   } catch (const std::exception& e) {
     MessageBoxA(hwnd,
                 e.what(),
@@ -150,6 +144,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
     break;
   case WM_DESTROY:
     Shell_NotifyIconA(NIM_DELETE, &tray_icon);
+
+    // Release application level lock
+    if (application_mutex) {
+      CloseHandle(application_mutex);
+      application_mutex = NULL;
+    }
+
     PostQuitMessage(0);
     break;
   case WM_USER:
@@ -171,7 +172,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
     }
     break;
   case WM_COPYDATA:
-    if (((PCOPYDATASTRUCT) lParam)->dwData == 0x547) {
+    if (((PCOPYDATASTRUCT) lParam)->dwData == kMsnMagicNumber) {
       OnCopyData(hWnd, wParam, lParam);
     }
     break;
@@ -185,6 +186,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
  * Saves instance handle and creates main window.
  */
 bool InitInstance(HINSTANCE hInstance, int nCmdShow) {
+  // Only allow one instance of the program
+  application_mutex = CreateMutex(NULL, FALSE, kApplicationMutexName);
+
+  if (ERROR_ALREADY_EXISTS == GetLastError()) {
+    return false;
+  }
+
   hInst = hInstance;
   hwnd = CreateWindow(kMsnWindowName,
                       kMsnWindowName,

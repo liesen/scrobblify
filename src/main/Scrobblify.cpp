@@ -9,7 +9,9 @@
 #include <fstream>
 
 
+// Scrobblify's plugin id
 static const std::string kPluginId = "spt";
+
 
 // Utility function to convert a wstring to string (UTF8)
 std::string ToUtf8(const std::wstring& widestring) {
@@ -38,29 +40,28 @@ Scrobblify::~Scrobblify() {
 }
 
 /** */
-void Scrobblify::Init(const std::wstring& user_id) {
-  // Get the path to the user's metadata file
-  user_metadata_path_ = user_id + _T("/metadata");
+void Scrobblify::Init() {
+  // Collect meta-data files
+  Scrobblify::GetSpotifyUserDirectories(metadata_paths_);
 
-  // Bail out if metadata file does not exist
-  WIN32_FIND_DATA find_data;
-
-  if (INVALID_HANDLE_VALUE == 
-      FindFirstFile(user_metadata_path_.c_str(), &find_data)) {
-    throw std::invalid_argument("User meta-data file not found.");
+  for (std::vector<std::wstring>::iterator it = metadata_paths_.begin();
+       it != metadata_paths_.end();
+       ++it) {
+    *it += _T("/metadata"); // Here we could check if the file exists
   }
 
-  scrob_submitter_.Init(kPluginId, &Scrobblify::StatusCallback, (void *) this); // This is so ugly
+  // Initialize Last.fm
+  scrob_submitter_.Init(kPluginId, &Scrobblify::StatusCallback, (void *) this);
 }
 
 /** 
  * Callback function for messages from the Last.fm client. Declared static
  * because of type issues when using pointer to member functions as callbacks;
- * /user_data/ is a pointer to the sending Scrobblify instance.
+ * /user_data/ is a pointer to the sending Scrobblify instance (butt ugly).
  */
-void Scrobblify::StatusCallback(int request_id, 
-                                bool is_error, 
-                                std::string message, 
+void Scrobblify::StatusCallback(int request_id,
+                                bool is_error,
+                                std::string message,
                                 void *user_data) {
   if (is_error) {
     throw std::runtime_error(message);
@@ -85,144 +86,161 @@ int Scrobblify::Start(const std::wstring& artist,
   const size_t kHashLength = 32;
   const size_t kLongHashLength = 40;
 
-  // Go get some meta data
-  FILE *metadata_file;
+  // Search all the meta-data files available
+  for (std::vector<std::wstring>::const_iterator it = metadata_paths_.begin();
+       it != metadata_paths_.end();
+       ++it) {
+    // Go get some meta data
+    FILE *metadata_file;
 
-  if (_wfopen_s(&metadata_file,
-                user_metadata_path_.c_str(),
-                _T("r")) != 0) {
-    throw std::runtime_error("Could not open user's meta-data file.");
-  }
-
-  std::wifstream in(metadata_file);
-  const size_t kMaxLineLength = 2048;
-  wchar_t line[kMaxLineLength];
-  
-  // Skip first line (contains "20" for no apparent reason)
-  in.getline(line, kMaxLineLength);
-
-  // Find hash for artist
-  wchar_t artist_hash[kHashLength];
-  bool artist_hash_found = false;
-
-  for (;
-       wcsnlen(line, kMaxLineLength) > 0;
-       in.getline(line, kMaxLineLength)) {
-    if (wcsncmp(artist.c_str(), 
-                &line[kHashLength + kDelimiterLength],
-                artist.size()) == 0) {
-      artist_hash_found = true;
-      wcsncpy(artist_hash, line, kHashLength);
-      break;
+    if (_wfopen_s(&metadata_file, (*it).c_str(), _T("r")) != 0) {
+      continue;
     }
-  }
 
-  if (!artist_hash_found) {
-    in.close();
-    throw std::invalid_argument("Artist meta-data not found.");
-  }
+    std::wifstream in(metadata_file);
+    const size_t kMaxLineLength = 2048;
+    wchar_t line[kMaxLineLength];
+    
+    // Skip first line (contains "21" for no apparent reason)
+    in.getline(line, kMaxLineLength);
 
-  // Skip rest of artist section
-  for (in.getline(line, kMaxLineLength);
-       wcsnlen(line, kMaxLineLength) > 0;
-       in.getline(line, kMaxLineLength)) {}
-  
-  in.getline(line, kMaxLineLength); // Skip section separator
-  std::wifstream::pos_type album_section_position = in.tellg();
-  
-  // Skip albums section -- move to next empty line
-  for (;
-       wcsnlen(line, kMaxLineLength) > 0;
-       in.getline(line, kMaxLineLength)) {}
+    // Skip if file is empty
+    if (wcsnlen(line, 1) == 0) {
+      in.close();
+      continue;
+    }
 
-  // Parse songs section. Each song is formatted like
-  //   hash        32 bytes
-  //   track       
-  //   artists  ; split with 0x2
-  //   long hash
-  //   length      
-  //   ...
-  int length = 0;
-  bool track_found = false;
-  wchar_t album_hash[kHashLength];
+    // Find hash for artist
+    wchar_t artist_hash[kHashLength];
+    bool artist_hash_found = false;
 
-  for (in.getline(line, kMaxLineLength);
-       wcsnlen(line, kMaxLineLength) > 0;
-       in.getline(line, kMaxLineLength)) {
-    if (wcsncmp(track.c_str(),
-                &line[kHashLength + kDelimiterLength],
-                track.size()) == 0) {
-      // Skip hash, separator, track, separator.
-      TCHAR *p = &line[kHashLength + kDelimiterLength + track.size() +
-          kDelimiterLength];
-      
-      // Match any of the artists
-      bool artist_match_found = wcsncmp(artist_hash, p, kHashLength) == 0;
+    for (;
+         wcsnlen(line, kMaxLineLength) > 0;
+         in.getline(line, kMaxLineLength)) {
+      if (wcsncmp(artist.c_str(), 
+                  &line[kHashLength + kDelimiterLength],
+                  artist.size()) == 0) {
+        artist_hash_found = true;
+        wcsncpy(artist_hash, line, kHashLength);
+        break;
+      }
+    }
 
-      for (p += kHashLength;
-           *p == 0x2;
-           p += kHashLength + kDelimiterLength) {
-        if (wcsncmp(artist_hash, &p[1], kHashLength) == 0) {
-          artist_match_found = true;
-          // Need to step through all artists
+    if (!artist_hash_found) {
+      in.close();
+      continue; // Try next file
+    }
+
+    // Skip rest of artist section
+    for (in.getline(line, kMaxLineLength);
+         wcsnlen(line, kMaxLineLength) > 0;
+         in.getline(line, kMaxLineLength)) {}
+    
+    in.getline(line, kMaxLineLength); // Skip section separator
+    std::wifstream::pos_type album_section_position = in.tellg();
+    
+    // Skip albums section -- move to next empty line
+    for (;
+         wcsnlen(line, kMaxLineLength) > 0;
+         in.getline(line, kMaxLineLength)) { }
+
+    // Parse songs section. Each song is formatted like
+    //   hash        32 bytes
+    //   track       
+    //   artists     ; split with 0x2
+    //   long hash
+    //   length      
+    //   ...
+    int length = 0;
+    bool track_found = false;
+    wchar_t album_hash[kHashLength];
+
+    for (in.getline(line, kMaxLineLength);
+         wcsnlen(line, kMaxLineLength) > 0;
+         in.getline(line, kMaxLineLength)) {
+      if (wcsncmp(track.c_str(),
+                  &line[kHashLength + kDelimiterLength],
+                  track.size()) == 0) {
+        // Skip hash, separator, track, separator.
+        wchar_t *p = &line[kHashLength + kDelimiterLength + track.size() +
+            kDelimiterLength];
+        
+        // Match any of the artists
+        bool artist_match_found = wcsncmp(artist_hash, p, kHashLength) == 0;
+
+        for (p += kHashLength;
+             *p == 0x2;
+             p += kHashLength + kDelimiterLength) {
+          if (!artist_match_found && // Don't compare if artist has been found
+              wcsncmp(artist_hash, &p[1], kHashLength) == 0) {
+            artist_match_found = true;
+          }
         }
+
+        if (!artist_match_found) {
+          continue;
+        }
+
+        p += kDelimiterLength + kLongHashLength + kDelimiterLength;
+
+        // Read track length
+        length = _wtoi(p); 
+        track_found = true;
+
+        // Skip length
+        p = wcschr(p, kDelimiterChar);
+        p += kDelimiterLength;
+
+        // Skip track number
+        p = wcschr(p, kDelimiterChar);
+        p += kDelimiterLength;
+
+        // Get album hash
+        wcsncpy(album_hash, p, kHashLength);
+        break;
       }
-
-      if (!artist_match_found) {
-        continue;
-      }
-
-      p += kDelimiterLength + kLongHashLength + kDelimiterLength;
-
-      // Read track length
-      length = _wtoi(p); 
-      track_found = true;
-
-      // Skip length
-      p = wcschr(p, kDelimiterChar);
-      p += kDelimiterLength;
-
-      // Skip track number
-      p = wcschr(p, kDelimiterChar);
-      p += kDelimiterLength;
-
-      // Get album hash
-      wcsncpy(album_hash, p, kHashLength);
-      break;
     }
-  }
 
-  if (!track_found || length <= 0) {
+    if (!track_found || length <= 0) {
+      in.close();
+      continue;
+    }
+
+    // Get album
+    in.seekg(album_section_position); // Seek back to the album section
+    std::wstring album;
+
+    for (in.getline(line, kMaxLineLength);
+         wcsnlen(line, kMaxLineLength) > 0;
+         in.getline(line, kMaxLineLength)) {
+      if (wcsncmp(album_hash, line, kHashLength) == 0) {
+        size_t album_length = wcscspn(&line[kHashLength + kDelimiterLength],
+                                      kDelimiter);
+        album.assign(line, kHashLength + kDelimiterLength, album_length);
+        break;
+      }
+    }
+
     in.close();
-    throw std::invalid_argument("Track meta-data not found.");
+    return current_request_id_ = scrob_submitter_.Start(
+        ToUtf8(artist),
+        ToUtf8(track),
+        ToUtf8(album),
+        "",
+        length,
+        "");
   }
 
-  // Get album
-  in.seekg(album_section_position); // Seek back to the album section
-  std::wstring album;
+  // throw std::invalid_argument("Track meta-data not found.");
 
-  for (in.getline(line, kMaxLineLength);
-       wcsnlen(line, kMaxLineLength) > 0;
-       in.getline(line, kMaxLineLength)) {
-    if (wcsncmp(album_hash, line, kHashLength) == 0) {
-      size_t album_length = wcscspn(&line[kHashLength + kDelimiterLength],
-                                    kDelimiter);
-      album.assign(line, kHashLength + kDelimiterLength, album_length);
-      break;
-    }
-  }
-
-  in.close();
-
-  current_request_id_ = scrob_submitter_.Start(
-      ToUtf8(artist),
-      ToUtf8(track),
-      ToUtf8(album),
-      "",
-      length,
-      "");
-
-  return current_request_id_;
+  // No meta-data found; fall back on a five minute track length
+  return current_request_id_ = scrob_submitter_.Start(
+        ToUtf8(artist),
+        ToUtf8(track),
+        "",
+        "",
+        5 * 60, // five minutes -- more than most songs
+        ""); // TODO(liesen): does this violate any AudioScrobbler rules?
 }
 
 /** */
@@ -280,17 +298,12 @@ size_t Scrobblify::GetSpotifyUserDirectories(std::vector<std::wstring> &users,
   WIN32_FIND_DATA find_data;
   HANDLE find_handle = FindFirstFile(path.c_str(), &find_data);
   
-  if (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-    users.push_back(users_directory + find_data.cFileName);
-    ++num_users;
-  }
-
-  while (FindNextFile(find_handle, &find_data)) {
+  do {
     if (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
       users.push_back(users_directory + find_data.cFileName);
       ++num_users;
     }
-  }
+  } while (FindNextFile(find_handle, &find_data));
 
   FindClose(find_handle);
   return num_users;
