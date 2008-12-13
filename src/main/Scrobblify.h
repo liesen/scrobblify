@@ -46,4 +46,6 @@ private:
   // Last.fm scrobbler
   ScrobSubmitter scrob_submitter_;
 
+  // Directory from which Scrobblify says it's scrobbling from
+  std::string scrobble_directory_; // must be UTF8
 };

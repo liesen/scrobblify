@@ -12,7 +12,6 @@
 // Scrobblify's plugin id
 static const std::string kPluginId = "spt";
 
-
 // Utility function to convert a wstring to string (UTF8)
 std::string ToUtf8(const std::wstring& widestring) {
   // Determine the length necessary for the string in UTF8
@@ -39,7 +38,10 @@ Scrobblify::~Scrobblify() {
   scrob_submitter_.Term();
 }
 
-/** */
+/** 
+ * Initializes Scrobblify. Collects paths to meta-data, sets the scrobble 
+ * directory and initializes the connection to the Last.fm client.
+ */
 void Scrobblify::Init() {
   // Collect meta-data files
   Scrobblify::GetSpotifyUserDirectories(metadata_paths_);
@@ -49,6 +51,8 @@ void Scrobblify::Init() {
        ++it) {
     *it += _T("/metadata"); // Here we could check if the file exists
   }
+
+  scrobble_directory_ = ToUtf8(Scrobblify::GetSpotifyDirectory());
 
   // Initialize Last.fm
   scrob_submitter_.Init(kPluginId, &Scrobblify::StatusCallback, (void *) this);
@@ -228,19 +232,18 @@ int Scrobblify::Start(const std::wstring& artist,
         ToUtf8(album),
         "",
         length,
-        "");
+        scrobble_directory_);
   }
 
-  // throw std::invalid_argument("Track meta-data not found.");
-
   // No meta-data found; fall back on a five minute track length
+  // TODO(liesen): does this violate any AudioScrobbler rules?
   return current_request_id_ = scrob_submitter_.Start(
         ToUtf8(artist),
         ToUtf8(track),
         "",
         "",
         5 * 60, // five minutes -- more than most songs
-        ""); // TODO(liesen): does this violate any AudioScrobbler rules?
+        scrobble_directory_);
 }
 
 /** */
@@ -257,7 +260,6 @@ std::wstring Scrobblify::GetSpotifyDirectory() {
   TCHAR path[MAX_PATH];
 
   if (FAILED(SHGetSpecialFolderPath(NULL, path, CSIDL_APPDATA, false))) {
-    // TODO(liesen): better error
     throw std::runtime_error("Could not find the Application Data directory.");
   }
 
@@ -267,19 +269,16 @@ std::wstring Scrobblify::GetSpotifyDirectory() {
   HANDLE find_handle = FindFirstFile(path, &find_data);
 
   if (INVALID_HANDLE_VALUE == find_handle) {
-    // TODO(liesen): better error, plz
-    throw std::runtime_error("Could not locate Spotify.");
+    throw std::runtime_error("Could not locate Spotify settings directory.");
   }
 
   FindClose(find_handle);
   return std::wstring(path);
 }
 
-// TODO(liesen): make diff between GetSpotifyUsersDirectory vs 
-// GetSpotifyUserDirectories clear
-
 /**
- * Returns the directory containing Spotify users.
+ * Returns the directory containing Spotify users' "home" directories. Sub-
+ * directories of this directory contain the meta-data file for each user.
  */
 std::wstring Scrobblify::GetSpotifyUsersDirectory() {
   return GetSpotifyDirectory() + _T("/Users");
@@ -290,10 +289,10 @@ std::wstring Scrobblify::GetSpotifyUsersDirectory() {
  */
 size_t Scrobblify::GetSpotifyUserDirectories(std::vector<std::wstring> &users,
                                              const std::wstring user_filter) {
-  std::wstring users_directory = GetSpotifyUsersDirectory() + _T("/");
+  std::wstring users_directory = GetSpotifyUsersDirectory();
   
   // Find users; directories named <username>-user
-  std::wstring path = users_directory + user_filter + _T("-user");
+  std::wstring path = users_directory + _T("/") + user_filter + _T("-user");
   size_t num_users = 0;
   WIN32_FIND_DATA find_data;
   HANDLE find_handle = FindFirstFile(path.c_str(), &find_data);
